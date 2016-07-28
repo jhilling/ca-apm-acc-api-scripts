@@ -499,12 +499,19 @@ class AccApi(AccRaw):
     def upload_file(self, filename):
         fields = [("name", os.path.basename(filename)),
                   ("modified", datetime.datetime.utcfromtimestamp(os.path.getmtime(filename)).isoformat())]
-        files = [
-            ("file", os.path.basename(filename), open(filename, "rb").read())]
+        files = [("file", os.path.basename(filename), open(filename, "rb").read())]
 
         res, json_obj = self.http_post_multipart("/apm/acc/file", fields, files)
 
         return GenericJsonObject(self, json_obj)
+
+    def upload_bundle(self, filename):
+        fields = [("name", os.path.basename(filename))]
+        files = [("file", os.path.basename(filename), open(filename, "rb").read())]
+
+        res, json_obj = self.http_post_multipart("/apm/acc/bundle", fields, files)
+
+        return Bundle(self, json_obj)
 
     def upgrade_status(self):
         return ControllerUpgradeStatus(self, None)
@@ -1126,11 +1133,17 @@ class Bundle(FetchableJsonObject):
     # def my_url(self):
     #     return "private/bundle"
 
+    def __init__(self, accapi, json_obj_or_item_id):
+        super(Bundle, self).__init__(accapi, json_obj_or_item_id)
+        self._profile = None
+
     def my_name(self):
         return "bundle"
 
     def profile(self):
-        return Profile(self.accapi, self.item_id)
+        if not self._profile:
+            self._profile = Profile(self.accapi, self.item_id)
+        return self._profile
 
     def filename(self):
         return "%s-%s.tar.gz" % (self["name"], self["version"])
@@ -1149,6 +1162,10 @@ class Bundle(FetchableJsonObject):
 
         return filename
 
+    def delete(self):
+        res = self.accapi.http_delete_raw("/apm/acc/bundle/" + str(self.item_id), self.accapi.headers)
+        if res.status not in (httplib.OK, httplib.NO_CONTENT, httplib.ACCEPTED):
+            raise ACCHttpException(res)
 
 # A profile hangs off of a Bundle
 class Profile(FetchableJsonObject):

@@ -285,22 +285,26 @@ APMCommandCenterServer/config/apmccsrv.properties)
 
 #### bundles.py
 
-List bundle information.  Bundles are small pieces of Agent which are 
+List/download/upload/delete bundles. Bundles are small pieces of Agent which are 
 combined together to make a complete APM Agent Package which can then be 
 downloaded and deployed (see `packages.py`).
+
+This script uses a command line subparser e.g. it can be called with 
+one of the actions list, download, upload, delete, and each of these 
+actions has its own options which can be queried with --help.
 
 
 #### packages.py
 
 List packages / add new bundles to packages / create new packages / download 
-packages.
+packages / delete packages.
 
-This script uses a command line subparser e.g. it can be called like with 
-one of the actions list, create, modify, download and each of these actions
-has its own options which can be queried with --help.
+This script uses a command line subparser e.g. it can be called with 
+one of the actions list, create, delete, modify, download, and each of these 
+actions has its own options which can be queried with --help.
 
 ```
-$ ./packages.py list|create|modify|download --help
+$ ./packages.py list|create|delete|modify|download --help
 ```
 
 

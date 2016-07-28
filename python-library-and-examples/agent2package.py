@@ -2,8 +2,8 @@
 
 
 # Convert an agent installation to an equivalent package, including creating overrides.
-# TODO optionall add extra files as a new bundle
-
+# TODO optionally add extra files as a new bundle
+# TODO does not handle dependencies.. i.e. if adding mqconnectors jms should also be added
 
 from __future__ import print_function
 
@@ -11,10 +11,13 @@ import os
 import sys
 import tarfile
 import re
+import hashlib
+import tempfile
 
 from distutils.version import LooseVersion
 
 import pyacc
+import bundle_builder
 
 from pyacc import safe
 
@@ -62,7 +65,6 @@ class App(pyacc.AccCommandLineApp):
 
         self.parser.add_argument('-d', '--download', action='store_true', help="Download package after creating it")
 
-
         self.parser.add_argument('agent', metavar='AGENT', nargs='*', type=str, help='Agent Package')
 
     def fetch_bundles(self):
@@ -73,7 +75,10 @@ class App(pyacc.AccCommandLineApp):
                 bundle["id"]
                 print(bundle)
 
-            bundle.filename = bundle.download(directory="bundle_temp")
+            temp_dir = "%s/bundle_temp_%s" % (tempfile.gettempdir(), hashlib.sha1(self.acc.server).hexdigest())
+            if not os.path.exists(temp_dir):
+                os.makedirs(temp_dir)
+            bundle.filename = bundle.download(directory=temp_dir)
             bundle_files.append(bundle)
         return bundle_files
 
@@ -93,13 +98,13 @@ class App(pyacc.AccCommandLineApp):
         return filename_map
 
     def create_initial_package(self,
-                               name="testBundle",
-                               os="unix",
-                               appserver="tomcat",
-                               em_host="http://em.ca.com:5001",
-                               process_display_name="This is the process display name",
-                               agent_version="10.2",
-                               comment="James is testing"):
+                               name,
+                               os,
+                               appserver,
+                               em_host,
+                               process_display_name,
+                               agent_version,
+                               comment):
 
         # Create draft package. This enables us to get the required/compatible/includes list of bundles
         new_package = self.acc.package_create(name=name,
@@ -202,6 +207,108 @@ class App(pyacc.AccCommandLineApp):
 
         return property_bundle_map
 
+    def create_package_from_archive(self, agent_archive, filename_map):
+
+        print("\nCreating empty package:")
+
+        v2 = ".".join(self.args.agent_version.split(".")[0:2])
+
+        new_package = self.create_initial_package(name=os.path.basename(agent_archive),
+                                                  os=self.args.os,
+                                                  appserver=self.args.appserver,
+                                                  em_host=self.args.em_host,
+                                                  process_display_name="process display name",
+                                                  agent_version=v2,
+                                                  comment="Package generated from Agent archive " +
+                                                          os.path.basename(agent_archive))
+
+        compatible_bundles = self.get_compatible_bundles(new_package)
+
+        included_bundles = self.get_required_bundles(new_package)
+
+        property_map = self.build_bundle_property_map(compatible_bundles.values())
+
+        property_bundles = {}
+
+        properties_from_archive = {}
+
+        # TODO would life be easier if the filemap only consisted of compatible bundles (i.e. pre-filtered)?
+
+        bundle_missing = None
+
+        print("\nAnalyzing Agent Package: %s" % agent_archive)
+        included_filename_map = {}
+        for atf, ti in self.archive_entries(agent_archive):
+            entries = filename_map.get(ti.name)
+
+            if not entries:
+                print("\t%s : WARNING: No bundle mapping" % (ti.name))
+
+                if not bundle_missing:
+                    name = "%s-unknown-files" % os.path.splitext(os.path.basename(agent_archive))[0]
+                    bundle_missing = bundle_builder.BundleBuilder(name, force_overwrite_existing=True)
+
+                bundle_missing.add_tarinfo_entry(atf, ti)
+            else:
+                print("\t%s : Provided by: %s" % (ti.name, ["%s:%s" % (x["name"], x["version"]) for x in entries or []]))
+                included_filename_map[ti.name] = entries
+
+            if ti.name.endswith(".profile"):
+                print("\tFound profile:", ti.name)
+
+                # parse that, look up the properties, etc
+                for hidden, name, value in self.extract_properties(atf.extractfile(ti)):
+
+                    if hidden:
+                        print("Skip hidden property %s" % name)
+                    else:
+                        # Save the original property
+                        properties_from_archive[name] = value
+
+                        print("\t\tSearching for property: %s(=%s)" % (name, value))
+
+                        bundle_map = property_map.get(name)
+
+                        if not bundle_map:
+                            print("\t\t\tCould not find the property. This will be added as an override.")
+                        else:
+                            print("\t\t\tFound property %s in %d bundles (%s)" % (name, len(bundle_map),
+                                ["%s:%s" % (bundle["name"], bundle["version"]) for bundle in bundle_map.itervalues()]))
+
+                            property_bundles[name] = bundle_map.values()
+
+        if bundle_missing:
+            bundle_missing.close()
+
+        # Pick bundles for the files we have
+        self.resolve_bundles(["file", "files"], included_filename_map, compatible_bundles, included_bundles)
+
+        # Pick bundles for the properties we have
+        property_to_bundle_map = self.resolve_bundles(["property", "properties"], property_bundles, compatible_bundles, included_bundles)
+
+        # Resolve remaining dependencies
+        self.resolve_dependencies(included_bundles, compatible_bundles)
+
+        master = new_package["bundleOverrides"]
+        override_count = self.create_overrides(master, properties_from_archive, property_to_bundle_map)
+
+        override_count += self.create_overrides2(master, included_bundles, properties_from_archive)
+
+        # Now add the bundles we selected to the package
+        self.add_bundles_to_package(new_package, included_bundles.values())
+
+        # TODO need to check if our bundles are setting properties that were not previously being set and hide them
+        # We do have the properties don't we?
+
+
+        # Add the overrides TODO really want to do this as part of the same patch, rather than 2 patches
+
+        if override_count > 0:
+            print("\nAdding %d overrides" % override_count)
+            new_package.add_overrides(master)
+
+        return bundle_missing, new_package
+
     def split_property(self, prop):
         prop_split = App.val_re.split(prop)
         # print("prop_split", prop_split)
@@ -211,90 +318,23 @@ class App(pyacc.AccCommandLineApp):
         value = prop_split[3].strip()
         return hidden, name, value
 
-    def create_package_from_archive(self, agent_archive, filename_map):
+    def extract_properties(self, fileobj):
+        for raw in fileobj:
+            line = raw.strip()
+            if not line or line[0] == "#":
+                continue
+            try:
+                hidden, name, value = self.split_property(line)
+                yield hidden, name, value
+            except IndexError as e:
+                print("Failed to process", line.strip())
 
-        print("\nCreating empty package:")
-
-        v2 = ".".join(self.args.agent_version.split(".")[0:2])
-
-        new_package = self.create_initial_package(name="testBundle",
-                                                  os=self.args.os,
-                                                  appserver=self.args.appserver,
-                                                  em_host=self.args.em_host,
-                                                  process_display_name="process display name",
-                                                  agent_version=v2,
-                                                  comment="Package derived from Agent archive " +
-                                                          os.path.basename(agent_archive))
-
-        compatible_bundles = self.get_compatible_bundles(new_package)
-        included_bundles = self.get_required_bundles(new_package)
-
-        property_map = self.build_bundle_property_map(compatible_bundles.values())
-
-        property_bundles = {}
-
-        properties_from_archive = {}
-
-        # TODO need to check for what didn't get added and initially warn, and create a new bundle for it.
-
-        # TODO would life be easier if the filemap only consisted of compatible bundles (i.e. pre-filtered)?
-
-        print("\nAnalyzing Agent Package: %s" % agent_archive)
-        included_filename_map = {}
-        for atf, ti in self.archive_entries(agent_archive):
-            entries = filename_map.get(ti.name)
-
-            if not entries:
-                print("\t%s : WARNING: No bundle mapping" % (ti.name))
-            else:
-                print("\t%s : %s" % (ti.name, ["%s:%s" % (x["name"], x["version"]) for x in entries or []]))
-                included_filename_map[ti.name] = entries
-
-            if ti.name.endswith(".profile"):
-                print("\tFound profile:", ti.name)
-
-                # parse that, look up the properties, etc
-                fileobj = atf.extractfile(ti)
-
-                for raw in fileobj:
-                    line = raw.strip()
-                    if not line or line[0] == "#":
-                        continue
-                    try:
-                        hidden, name, value = self.split_property(line)
-                        if not hidden:
-
-                            # Save the original property
-                            properties_from_archive[name] = value
-
-                            print("\t\tSearching for property: %s(=%s)" % (name, value))
-
-                            bundle_map = property_map.get(name)
-
-                            if not bundle_map:
-                                print("\t\t\tCould not find the property. This will be added as an override.")
-                            else:
-                                print("\t\t\tFound property %s in %d bundles (%s)" % (name, len(bundle_map),
-                                    ["%s:%s" % (bundle["name"], bundle["version"]) for bundle in bundle_map.itervalues()]))
-
-                                property_bundles[name] = bundle_map.values()
-                        else:
-                            print("Skip hidden property %s" % name)
-                    except IndexError as e:
-                        print("Failed to process", line.strip())
-
-        # Pick bundles for the files we have
-        self.resolve_bundles(["file", "files"], included_filename_map, compatible_bundles, included_bundles)
-
-        # Pick bundles for the properties we have
-        property_to_bundle_map = self.resolve_bundles(["property", "properties"], property_bundles, compatible_bundles, included_bundles)
-
-
-        master = new_package["bundleOverrides"]
+    def create_overrides(self, master, properties_from_archive, property_to_bundle_map):
 
         override_count = 0
 
-        # Need to check what the value in the profile and the bundle are. Is the are != then we need to create an override
+        # Need to check what the value in the profile and the bundle are.
+        # If they are != then we need to create an override
         for property, value in properties_from_archive.iteritems():
 
             # print("\tFrom archive: %s=%s" % (property, value))
@@ -303,7 +343,7 @@ class App(pyacc.AccCommandLineApp):
             bundle = property_to_bundle_map.get(property)
 
             if not bundle:
-                print("\tProperty %s is not fulfilled by any bundle, need to create an override to create the property" % (property))
+                print("\tProperty %s is not fulfilled by any bundle, need to create an override to create the property" % property)
 
                 overrides = master.setdefault("java-agent", {"preamble": None, "properties":[]})
 
@@ -337,18 +377,47 @@ class App(pyacc.AccCommandLineApp):
 
                     override_count += 1
 
-        # Now add the bundles we selected to the package
-        self.add_bundles_to_package(new_package, included_bundles.values())
+        return override_count
 
-        # Add the overrides TODO really want to do this as part of the same patch, rather than 2 patches
+    def create_overrides2(self, master, included_bundles, properties_from_archive):
+        print("\nChecking for extra properties in included bundles\n")
 
-        if override_count > 0:
-            print("\nAdding %d overrides" % override_count)
-            new_package.add_overrides(master)
+        override_count = 0
 
-        return new_package
+        for bundle in included_bundles.values():
+
+            print("Bundle %s:%s" % (bundle["name"], bundle["version"]))
+
+            # TODO OPT we're feting the profile again. the bundle in the compatible_bundles list should alraedy have it in there.
+            profile = bundle.profile()
+
+            for prop in profile["properties"] or []:
+                if not prop["hidden"]:
+
+                    # What was the state of this property in the original agent package?
+
+                    original_property = properties_from_archive.get(prop["name"])
+
+                    if not original_property:
+                        print("\thiding %s=%s" % (prop["name"], prop["value"]))
+
+                        overrides = master.setdefault(bundle["name"], {"preamble": None, "properties":[]})
+
+                        prop_dic = {"description": None,
+                                    "hidden": True,
+                                    "name":  prop["name"],
+                                    "value": prop["value"] or "",
+                                    "userKey": None}
+
+                        overrides["properties"].append(prop_dic)
+
+                        override_count += 1
+
+        return override_count
 
     def resolve_bundles(self, mapping_type, included_filename_map, compatible_bundles, included_bundles):
+
+        """Resolve files or properties to the bundle they belong to"""
 
         bundle_map = {}
 
@@ -397,6 +466,49 @@ class App(pyacc.AccCommandLineApp):
 
         return bundle_map
 
+    def resolve_dependencies(self, bundles, compatible_bundles):
+        print("\nResolve remaining dependencies for package\n")
+
+        facets_included_map = {}
+        for bundle in bundles.values():
+            for facet in bundle["facets"]:
+                facets_included_map.setdefault(facet, []).append(bundle)
+
+        facets_compatible_map = {}
+        for bundle in compatible_bundles.values():
+            for facet in bundle["facets"]:
+                facets_compatible_map.setdefault(facet, []).append(bundle)
+
+        for bundle in bundles.values():
+            self.resolve_dependency_recursive(facets_included_map, facets_compatible_map, bundle, bundles, compatible_bundles)
+
+    def resolve_dependency_recursive(self, facets_included_map, facets_compatible_map, bundle, bundles, compatible_bundles):
+
+        print("Bundle %s" % bundle["name"])
+
+        for dep in bundle["dependencies"]:
+
+            dep_implemented_by = facets_included_map.get(dep)
+
+            if not dep_implemented_by:
+
+                # Search compatible bundles for that one
+                entries = facets_compatible_map.get(dep)
+
+                candidate = self.choose_bundle(entries, compatible_bundles, bundles)
+
+                print("\tNeed to additionally include %s:%s" % (candidate["name"], candidate["version"]))
+                bundles[candidate["name"]] = candidate
+
+                for facet in candidate["facets"]:
+                    facets_included_map.setdefault(facet, []).append(candidate)
+
+                # Now recurse for the one we added
+                self.resolve_dependency_recursive(facets_included_map, facets_compatible_map, candidate, bundles, compatible_bundles)
+            else:
+                dep_implemented_by = [b["name"] for b in dep_implemented_by]
+                print("\tdepends on: %s which is provided by: %s" % (dep, dep_implemented_by))
+
     def add_bundles_to_package(self, new_package, bundles):
 
         print("\nAdding %d bundles to package:" % len(bundles))
@@ -419,17 +531,48 @@ class App(pyacc.AccCommandLineApp):
         filename_map = self.index_bundles(bundle_files)
 
         for agent_archive in self.args.agent:
-            new_package = self.create_package_from_archive(agent_archive, filename_map)
+            bundle_missing, new_package = self.create_package_from_archive(agent_archive, filename_map)
 
-            print("\nCreated package id is: %s" % new_package["id"])
+            msg_details = {"tar_name": bundle_missing and bundle_missing.tar_name or "None",
+                       "package_id": new_package["id"],
+                       "acc_server": self.acc.server}
+
+            print("""
+##############################################################################
+
+Package id of created package is: %(package_id)s
+""" % (msg_details))
 
             if self.args.download:
                 new_package.download(".", self.args.format)
 
-            print('\nYou can download this package by running "packages.py download %s"' % new_package["id"])
+            if bundle_missing:
+                print("""
+Note, a new bundle has been created *locally* for unknown content:
 
-            print("\nAlternatively you can view/modify/download the package within ACC here: %s/#/packages?id=%s\n" %
-                  (self.acc.server, new_package["id"]))
+  %(tar_name)s
+
+Please review this bundle file, and if you would like to include it in your
+package, first upload the bundle and then add the bundle to the package,
+like this:
+
+  bundles.py upload '%(tar_name)s' # <-- this will print the new bundle ID
+  packages.py modify --add NEW_BUNDLE_ID_FROM_BUNDLE_UPLOAD %(package_id)d
+
+Or alternatively, upload the bundle and re-run this script.
+
+""" % msg_details)
+
+            print('''
+You can download the package by running:
+
+  packages.py download %(package_id)d
+
+Alternatively you can view/modify/download the package within ACC here:
+
+  %(acc_server)s/#/packages?id=%(package_id)s
+
+''' % msg_details)
 
 if __name__ == "__main__":
     App().run()
