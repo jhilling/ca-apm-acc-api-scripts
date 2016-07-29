@@ -6,6 +6,7 @@ import pyacc
 
 from pyacc import safe
 
+# TODO this should also be able to list the bundle profile
 
 class App(pyacc.AccCommandLineApp):
     """

@@ -181,7 +181,7 @@ class BundleSpec(object):
         j["version"] = "10.4.0.0"
         j["facets"] = ["generated"]
         j["dependencies"] = ["java-agent", "process"]
-        j["enhances"] = ["java-agent"]
+        j["enhances"] = []
         j["specificationVersion"] = "2"
         j["compatibility"] = {"agentVersion": ">=10.2", "osName": ["windows", "unix"]}
         j["type"] = "java"
@@ -246,7 +246,7 @@ class BundleBuilder(object):
 
         if fileobj:
 
-            if os.path.basename(archive_filename).find("toggles") >= 0:
+            if "toggles" in os.path.basename(archive_filename):
 
                 if self.added_toggles:
                     # TODO this is a hack. A bundle cannot have multiple toggles files, so rename them.

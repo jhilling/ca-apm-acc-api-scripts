@@ -476,14 +476,18 @@ class AccApi(AccRaw):
 
     def package_create(self, name, os, appserver, em_host, agent_version, process_display_name, comment, draft):
 
-        body = """
-{"draft":%(draft)s,
-"environment":{"osName":"%(os)s","process":"%(appserver)s","agentVersion":"%(agent_version)s","processDisplayName":"%(process_display_name)s"},
-"bundleOverrides":{},
-"emHost":"%(em_host)s",
-"packageName":"%(name)s",
-"comment":"%(comment)s"}
-""" % locals()
+        body = {"draft": draft,
+                "bundleOverrides": {},
+                "environment": {"osName": os,
+                                "process": appserver,
+                                "agentVersion": agent_version,
+                                "processDisplayName": process_display_name},
+                "emHost": em_host,
+                "packageName": name,
+                "comment": comment
+                }
+
+        body = json.dumps(body)
 
         res, package_json = self.http_post("/apm/acc/package", body)
 
@@ -1242,11 +1246,12 @@ class Package(FetchableJsonObject):
     def add_overrides(self, overrides):
         """Add overrides already in json structure"""
 
-        body='{"bundleOverrides": %s}' % json.dumps(overrides)
-        print("body is:", body)
-        # pprint.PrettyPrinter(indent=2).pprint(body)
+        body = {"bundleOverrides": overrides}
 
-        res, json_obj = self.accapi.http_patch("/apm/acc/package/" + str(self.item_id), body)
+        # print("body is:", body)
+        # pprint.pprint(body, indent=2)
+
+        res, json_obj = self.accapi.http_patch("/apm/acc/package/" + str(self.item_id), json.dumps(body))
 
 
 class AccCommandLineApp(object):

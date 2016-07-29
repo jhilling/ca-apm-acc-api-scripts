@@ -156,7 +156,8 @@ class App(pyacc.AccCommandLineApp):
                                                   em_host=self.args.em_host,
                                                   agent_version=self.args.agent_version,
                                                   process_display_name=self.args.process_display_name or self.args.appserver,
-                                                  comment=self.args.comment)
+                                                  comment=self.args.comment,
+                                                  draft=False)
             print(new_package)
 
     def download(self):
