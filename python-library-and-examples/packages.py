@@ -58,7 +58,9 @@ class App(pyacc.AccCommandLineApp):
                                      default="archive", choices=["zip", "tar", "tar.gz", "archive"])
         download_parser.add_argument('package_ids', metavar='PACKAGE_ID', nargs='*', type=str,
                                      help='package ids', default=[])
-        download_parser.add_argument('--all', action='store_true', help="also download old versions of packages")
+        download_parser.add_argument('--em-host', action='store', help="EM host name", default="")
+        download_parser.add_argument('--force', '-f', action='store_true', help="Force overrwrite of existing file", default=False)
+        download_parser.add_argument('--all', action='store_true', help="Also download old versions of packages")
 
         delete_parser = subparsers.add_parser("delete")
         delete_parser.add_argument('package_ids', metavar='PACKAGE_ID', nargs='+', type=str,
@@ -163,7 +165,7 @@ class App(pyacc.AccCommandLineApp):
     def download(self):
         # The package will be named automatically by a name suggested from the Config Server
         for package in self._get_packages():
-            filename = package.download(".", self.args.format)
+            filename = package.download(".", self.args.format, em_host=self.args.em_host, overwrite=self.args.force)
 
     def modify(self):
 

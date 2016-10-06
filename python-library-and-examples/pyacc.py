@@ -110,12 +110,12 @@ def safe(val):
     return str(val)
 
 
-def write_content_to_file(res, filename, chunk_size=1048576):
+def write_content_to_file(res, filename, overwrite=False, chunk_size=1048576):
 
     # print("response headers:")
     # print(res.msg)
 
-    if os.path.exists(filename):
+    if not overwrite and os.path.exists(filename):
         print("Skipping writing existing:", filename)
     else:
         content_length = long(res.msg["content-length"])
@@ -448,7 +448,7 @@ class AccApi(AccRaw):
                 archive_type = "zip"
 
         fname = "acc-controller-package.%s" % archive_type
-        res = self.http_get("/package/", fname)
+        res = self.http_get("/apm/acc/controllerPackage/", fname)
 
         if not filename:
             filename = fname
@@ -1171,6 +1171,7 @@ class Bundle(FetchableJsonObject):
         if res.status not in (httplib.OK, httplib.NO_CONTENT, httplib.ACCEPTED):
             raise ACCHttpException(res)
 
+
 # A profile hangs off of a Bundle
 class Profile(FetchableJsonObject):
 
@@ -1199,20 +1200,20 @@ class Package(FetchableJsonObject):
     def my_name(self):
         return "package"
 
-    def download(self, base_dir=".", archive_format="archive", filename=None):
+    def download(self, base_dir=".", archive_format="archive", filename=None, em_host="", overwrite=False):
 
         print("Start initial download request")
 
         # Pass a custom header
         headers = self.accapi.headers.copy()
         headers["accept"] = "application/x-tar"
-        res = self.accapi.http_get("/apm/acc/package", self.item_id, headers, format=archive_format)
+        res = self.accapi.http_get("/apm/acc/package", self.item_id, headers, format=archive_format, emHost=em_host)
 
         if not filename:
             filename = get_filename_from_content_disp(res)
 
         filename = os.path.join(base_dir, filename)
-        write_content_to_file(res, filename)
+        write_content_to_file(res, filename, overwrite)
 
         return filename
 
@@ -1472,8 +1473,9 @@ class Examples(AccCommandLineApp):
 
             if package["latest"]:
                 print("Downloading latest version of package", package["packageName"])
-                package.download()
-
+                f = package.download(overwrite=True)
+                print("Deleting", f)
+                os.remove(f)
 
 if __name__ == "__main__":
     Examples().run()
